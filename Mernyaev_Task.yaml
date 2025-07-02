@@ -1,0 +1,80 @@
+# 3 зоны по 5 нод, т.е. у нас три изолированных физически сервера 
+# приложение запускается 5-10 сек
+# 4 пода нужно макс из доступных 5 в 3 зонах
+# стандартное потребление 0.1 ядра, постоянно нужно 128 (мегабайт или мебибайт? взял мебибайты)
+# пик запросов днем
+---
+apiVersion: apps/v1
+kind: Deployment 
+metadata:
+  name: nasha-app 
+  labels:
+    app: nasha-app
+spec:
+  replicas: 4 # 4 пода достаточно
+  selector:
+    matchLabels:
+      app: nasha-app
+  strategy:
+    type: RollingUpdate # при обновах будем постепенно обновлять реплики          
+    rollingUpdate:
+      maxSurge: 1 # максимум обновляем одну реплику за раз
+      maxUnavailable: 1 
+  template:
+    metadata:
+      labels:
+        app: nasha-app
+    spec:
+      # в гугле и доках https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+      topologySpreadConstraints:
+        - maxSkew: 1 # можно отклониться на 1 под в каждой зоне
+          topologyKey: topology.kubernetes.io/zone # определяем как зоны по условию
+          whenUnsatisfiable: ScheduleAnyway 
+          labelSelector:
+            matchLabels:
+              app: nasha-app
+      containers:
+        - name: nasha-app
+          image: image-nasha-app # вставить имя образа нашей эпп
+          ports:
+            - containerPort: 80
+          resources:
+            requests: # сколько требуется по изнач данным 
+              cpu: "100m" # 100 * 10^-3, получаем 0.1 ядра        
+              memory: "128Mi"  
+            limits: # т.к. нам нужно много мощности процессора на старте работы делаем лимиты по cpu побольше
+              cpu: "600m"
+              memory: "128Mi" # память не меняется по условию
+          readinessProbe:
+            httpGet:
+              path: /nasha_working # апи метод приложения, оповещающей о готовности и работе приложения
+              port: 80
+            initialDelaySeconds: 11   # 5-10 секунд требует для запуска, пробовать будем через 11
+            periodSeconds: 5 
+          livenessProbe: # проверка здоровья нашего контейнера
+            httpGet:
+              path: /nasha_working
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      restartPolicy: Always
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler # используем горизонтальное масштабирование для экономии ресурсов 
+metadata:
+  name: nasha-app-horpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nasha-app
+  minReplicas: 2 # ночью трафика меньше, урежем поды вдвое для  
+  # достижения цели минимально возможного потребления ресурсов
+  maxReplicas: 4
+  metrics: # по чему принимать решение о масштабировании
+    - type: Resource # по ресурсу
+      resource: # какому
+        name: cpu # процессор
+        target: 
+          type: Utilization
+          averageUtilization: 70  # если потребление ресурсов проц-ра превысит это число развернем доп. поды
